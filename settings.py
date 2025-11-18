@@ -33,6 +33,16 @@ def getSettings():
             'targetSpeed': 1.33,
             'N': 50,
             'gaitCycleSimulation': 'full'},
-        }    
+        'AG0': {
+            'model': 'Hamner_modified',
+            'targetSpeed': 1.33,
+            'N': 25,
+            'gaitCycleSimulation': 'half'},
+        'AG1': {
+            'model': 'Hamner_modified',
+            'targetSpeed': 1.33,
+            'N': 50,
+            'gaitCycleSimulation': 'full'},
+        }
     
     return settings

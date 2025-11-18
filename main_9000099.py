@@ -37,7 +37,7 @@ saveOptimalTrajectories = True # Set True to save optimal trajectories
 # 'settings' module.
 # cases = [str(i) for i in range(0,1)]
 
-cases = ['AG0']
+cases = ['AG1']
         
 # Import settings.
 from settings import getSettings
@@ -132,12 +132,16 @@ for case in cases:
          
     # Paths.
     main_folder = '/dataNAS/people/aagatti/projects/pred_sim_OAI/Data'
-    model_type = 'Reference_Models'
+    # model_type = 'Reference_Models'
+    model_type = 'Simulations'
     models_folder = os.path.join(main_folder, model_type)
-    model_folder_name = 'Hamner'
+    subject_id = '9000099'
+    # model_folder_name = 'Hamner'
+    model_folder_name = subject_id
     model_folder = os.path.join(models_folder, model_folder_name)
     pathModelFolder = model_folder
-    modelName = model
+    # modelName = model
+    modelName = f'Hamner_modified_{subject_id}_scaled'
     pathModel = os.path.join(model_folder, modelName + '.osim')
     
     results_folder_name = 'Results'
