@@ -61,14 +61,14 @@ class bounds:
                 
                 # Special cases
                 if joint == 'pelvis_tx':
-                    upperBoundsPosition[joint] = [2]
+                    upperBoundsPosition[joint] = [3.0]
                     lowerBoundsPosition[joint] = [0]
                 elif joint == 'pelvis_ty':
-                    upperBoundsPosition[joint] = [1.1]
-                    lowerBoundsPosition[joint] = [0.75]
+                    upperBoundsPosition[joint] = [2.0]
+                    lowerBoundsPosition[joint] = [0.5]
                 elif joint == 'pelvis_tz':
-                    upperBoundsPosition[joint] = [0.1]
-                    lowerBoundsPosition[joint] = [-0.1]
+                    upperBoundsPosition[joint] = [0.3]
+                    lowerBoundsPosition[joint] = [-0.3]
                 elif (joint == 'elbow_flex_l') or (joint == 'elbow_flex_r'):
                     lowerBoundsPosition[joint] = [0]
                 elif ((joint == 'arm_add_l') or (joint == 'arm_rot_l') or 
@@ -123,10 +123,6 @@ class bounds:
                 lb = lb - 3*r                        
                 upperBoundsVelocity.insert(count, joint, [ub])
                 lowerBoundsVelocity.insert(count, joint, [lb])
-    
-                # Special cases.
-                if self.targetSpeed > 1.33:
-                    upperBoundsVelocity['pelvis_tx'] = [4]
 
             # Scaling.
             s = np.max(np.array([abs(upperBoundsVelocity[joint])[0],
@@ -134,6 +130,11 @@ class bounds:
             scalingVelocity.insert(count, joint, [s])
             upperBoundsVelocity[joint] /= scalingVelocity[joint]
             lowerBoundsVelocity[joint] /= scalingVelocity[joint]
+        
+        # Special cases - apply after all joints have been processed.
+        if self.targetSpeed > 1.33:
+            # Need to re-scale pelvis_tx after updating the bound
+            upperBoundsVelocity['pelvis_tx'] = [4] / scalingVelocity['pelvis_tx']
 
         return upperBoundsVelocity, lowerBoundsVelocity, scalingVelocity
     
