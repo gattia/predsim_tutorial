@@ -477,12 +477,31 @@ def getIdxIC_3D(GRF_opt, threshold, gaitCycleSimulation='half'):
             legIC = "right"
     elif gaitCycleSimulation == 'full':
         # TODO no much testing done here
+        idxIC = None
+        legIC = "undefined"
         contacts = np.where(GRF_opt > threshold)[0]
         for contact in contacts:
             if contact > 0:
                 if GRF_opt[contact-1] < threshold:
                     idxIC = contact
-        legIC = "right"            
+                    legIC = "right"
+                    break  # Found the first heel strike
+        
+        # If no heel strike was found, check for specific edge case where simulation 
+        # starts in stance and ends just before next heel strike
+        if idxIC is None:
+            if GRF_opt[0] > threshold and GRF_opt[-1] < threshold:
+                print("WARNING: No mid-cycle heel strike detected, but simulation starts in contact and ends in flight. Assuming already aligned (idxIC=0).")
+                idxIC = 0
+                legIC = "right"
+        
+        # If still no heel strike was found, return default with failure flag
+        if idxIC is None:
+            print(f"WARNING: No valid heel strike detected in gait cycle. "
+                  f"The optimization may not have converged to a valid gait pattern. "
+                  f"Maximum GRF: {np.max(GRF_opt):.2f}N (threshold: {threshold}N)")
+            idxIC = 0
+            legIC = "failed_reconstruction"
             
     return idxIC, legIC
 
