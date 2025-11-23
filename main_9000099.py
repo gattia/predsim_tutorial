@@ -12,6 +12,11 @@
         
     Please contact me or submit a github issue if you find bugs or have
     suggestions to improve this script.
+    
+    salloc -c 16 --mem=36gb --time=1-00
+    conda activate predsim_tutorial
+    cd /dataNAS/people/aagatti/projects/pred_sim_OAI/predsim_tutorial
+    python main_9000099.py
 '''
 
 import os
@@ -91,7 +96,8 @@ for case in cases:
                'jointAccelerationTerm': 50000,
                'armExcitationTerm': 1000000,
                'passiveTorqueTerm': 1000, 
-               'controls': 0.001}
+               'controls': 0.001,
+               'positionTrackingTerm': 10}  # Low weight for loose tracking
     if 'metabolicEnergyRateTerm' in settings[case]:
         weights['metabolicEnergyRateTerm'] = (
             settings[case]['metabolicEnergyRateTerm'])
@@ -110,6 +116,9 @@ for case in cases:
     if 'controls' in settings[case]:
         weights['controls'] = (
             settings[case]['controls'])
+    if 'positionTrackingTerm' in settings[case]:
+        weights['positionTrackingTerm'] = (
+            settings[case]['positionTrackingTerm'])
 
     ###########################################################################
     # Numerical settings.
@@ -125,7 +134,8 @@ for case in cases:
     if 'd' in settings[case]:
         d = settings[case]['d']    
     
-    nThreads = 15 # default number of threads.
+    nThreads = int(os.environ.get('SLURM_CPUS_PER_TASK' * 2, 4))
+
     if 'nThreads' in settings[case]:
         nThreads = settings[case]['nThreads']
     parallelMode = "thread" # only supported mode.
@@ -271,12 +281,21 @@ for case in cases:
             joints.remove(joint)
     nJoints = len(joints)
     
+    # Define which joints to track (exclude pelvis for predictive simulation)
+    # Pelvis coordinates should be free to optimize, not forced to match reference
+    pelvisJoints = ['pelvis_tilt', 'pelvis_list', 'pelvis_rotation',
+                    'pelvis_tx', 'pelvis_ty', 'pelvis_tz']
+    jointsToTrack = [joint for joint in joints if joint not in pelvisJoints]
+    from utilities import getJointIndices
+    idxJointsToTrack = getJointIndices(joints, jointsToTrack)
+    nJointsToTrack = len(jointsToTrack)
+    print(f"Tracking {nJointsToTrack} joints (excluding {len(pelvisJoints)} pelvis coordinates)")
+    
     # Rotational joints.
     rotationalJoints = copy.deepcopy(joints)
     rotationalJoints.remove('pelvis_tx')
     rotationalJoints.remove('pelvis_ty')
     rotationalJoints.remove('pelvis_tz')
-    from utilities import getJointIndices
     idxRotJoints = getJointIndices(joints, rotationalJoints)
     
     # Helper lists for periodic constraints.
@@ -718,6 +737,29 @@ for case in cases:
     # Other.
     _, _, scalingMtpE = bounds.getBoundsMtpExcitation()
     
+    # Prepare tracking reference data
+    if weights['positionTrackingTerm'] > 0:
+        print("Preparing position tracking reference data...")
+        Qs_track_ref = Qs_walk_filt.copy()
+        # Interpolate to N+1 mesh points
+        from scipy.interpolate import interp1d
+        import pandas as pd
+        time_original = Qs_track_ref['time'].to_numpy()
+        Qs_track_ref_interp = pd.DataFrame()
+        for joint in joints:
+            f_interp = interp1d(time_original, Qs_track_ref[joint].to_numpy(), 
+                               kind='cubic', fill_value='extrapolate')
+            time_new = np.linspace(time_original[0], time_original[-1], N+1)
+            Qs_track_ref_interp[joint] = f_interp(time_new)
+        # Scale the reference data (will be used in optimization)
+        Qs_track_ref_scaled = Qs_track_ref_interp.copy()
+        for joint in joints:
+            Qs_track_ref_scaled[joint] = Qs_track_ref_interp[joint] / scalingQs.iloc[0][joint]
+        print(f"  Tracking reference prepared for {len(joints)} joints over {N+1} mesh points")
+    else:
+        Qs_track_ref_scaled = None
+        print("Position tracking disabled (weight = 0)")
+    
     # Initial guess of the optimal control problem.
     if guessType == 'coldStart':
         from guesses import coldStart
@@ -924,6 +966,9 @@ for case in cases:
         # Slack controls.
         normFDtj = ca.MX.sym('normFDtj', nMuscles, d);
         Qddsj = ca.MX.sym('Qddsj', nJoints, d)
+        # Tracking reference (if enabled)
+        if Qs_track_ref_scaled is not None:
+            Qs_ref_k = ca.MX.sym('Qs_ref_k', nJoints)
         
         #######################################################################
         # Time step.
@@ -1067,11 +1112,21 @@ for case in cases:
             forceDtTerm = f_NMusclesSum2(normFDtj[:, j])
             armAccelerationTerm = f_nArmJointsSum2(Qddsj[idxArmJoints, j])
             
+            # Position tracking term
+            if Qs_track_ref_scaled is not None:
+                # Tracking error: only for non-pelvis joints
+                # Pelvis is free to optimize for COM trajectory
+                tracking_error = Qskj[idxJointsToTrack, j+1] - Qs_ref_k[idxJointsToTrack]
+                positionTrackingTerm = ca.sumsqr(tracking_error)
+            else:
+                positionTrackingTerm = 0
+            
             J += ((weights['metabolicEnergyRateTerm'] * metEnergyRateTerm +
                    weights['activationTerm'] * activationTerm + 
                    weights['armExcitationTerm'] * armExcitationTerm + 
                    weights['jointAccelerationTerm'] * jointAccelerationTerm +                
                    weights['passiveTorqueTerm'] * passiveTorqueTerm + 
+                   weights['positionTrackingTerm'] * positionTrackingTerm +
                    weights['controls'] * (forceDtTerm + activationDtTerm 
                           + armAccelerationTerm)) * h * B[j + 1])
             
@@ -1172,20 +1227,49 @@ for case in cases:
         ineq_constr5 = ca.vertcat(*ineq_constr5)
         ineq_constr6 = ca.vertcat(*ineq_constr6)
         # Create function for map construct (parallel computing).
-        f_coll = ca.Function('f_coll', [tf, ak, aj, normFk, normFj, Qsk, 
-                                        Qsj, Qdsk, Qdsj, aArmk, aArmj,
-                                        aDtk, eArmk, normFDtj, Qddsj], 
-                [eq_constr, ineq_constr1, ineq_constr2, ineq_constr3, 
-                 ineq_constr4, ineq_constr5, ineq_constr6, J])     
+        # Build lists of inputs and outputs for the CasADi function.
+        # This approach makes it easier to conditionally add optional parameters
+        # (e.g., tracking reference) without duplicating the entire function definition.
+        
+        # Base inputs: time, activations, forces, positions, velocities, arm states, derivatives
+        f_coll_inputs = [tf, ak, aj, normFk, normFj, Qsk, 
+                        Qsj, Qdsk, Qdsj, aArmk, aArmj,
+                        aDtk, eArmk, normFDtj, Qddsj]
+        
+        # Outputs: constraints (equality and inequality) and cost function
+        f_coll_outputs = [eq_constr, ineq_constr1, ineq_constr2, ineq_constr3, 
+                         ineq_constr4, ineq_constr5, ineq_constr6, J]
+        
+        # Add tracking reference as input if position tracking is enabled
+        if Qs_track_ref_scaled is not None:
+            f_coll_inputs.append(Qs_ref_k)
+        
+        # Create CasADi function with the assembled input/output lists
+        f_coll = ca.Function('f_coll', f_coll_inputs, f_coll_outputs)     
         # Create map construct (N mesh intervals).
         f_coll_map = f_coll.map(N, parallelMode, nThreads)   
         # Call function with opti variables.
+        # Build list of arguments for the mapped function call.
+        # Base arguments: all the optimization variables for dynamics and constraints
+        f_coll_map_args = [
+            finalTime, a[:, :-1], a_col, normF[:, :-1], normF_col, 
+            Qs[:, :-1], Qs_col, Qds[:, :-1], Qds_col, 
+            aArm[:, :-1], aArm_col, aDt, eArm, normFDt_col, Qdds_col
+        ]
+        
+        # Add tracking reference data if position tracking is enabled
+        if Qs_track_ref_scaled is not None:
+            # Create reference data matrix for all mesh points (N mesh intervals)
+            Qs_ref_all = np.zeros((nJoints, N))
+            for k in range(N):
+                for idx, joint in enumerate(joints):
+                    Qs_ref_all[idx, k] = Qs_track_ref_scaled[joint].iloc[k]
+            f_coll_map_args.append(Qs_ref_all)
+        
+        # Call the mapped function with the assembled argument list
         (coll_eq_constr, coll_ineq_constr1, coll_ineq_constr2,
          coll_ineq_constr3, coll_ineq_constr4, coll_ineq_constr5,
-         coll_ineq_constr6, Jall) = f_coll_map(
-             finalTime, a[:, :-1], a_col, normF[:, :-1], normF_col, 
-             Qs[:, :-1], Qs_col, Qds[:, :-1], Qds_col, 
-             aArm[:, :-1], aArm_col, aDt, eArm, normFDt_col, Qdds_col)
+         coll_ineq_constr6, Jall) = f_coll_map(*f_coll_map_args)
         # Set constraints.    
         opti.subject_to(ca.vec(coll_eq_constr) == 0)
         opti.subject_to(ca.vec(coll_ineq_constr1) >= 0)
@@ -1730,6 +1814,7 @@ for case in cases:
         activationDtTerm_opt_all = 0
         forceDtTerm_opt_all = 0
         armAccelerationTerm_opt_all = 0
+        positionTrackingTerm_opt_all = 0
         h_opt = finalTime_opt / N
         for k in range(N):
             # States.
@@ -1834,6 +1919,18 @@ for case in cases:
                 metabolicEnergyRateTerm_opt = (
                     f_NMusclesSum2(metabolicEnergyRatej_opt) / bodyMass)
                 
+                # Position tracking term (if enabled)
+                if Qs_track_ref_scaled is not None:
+                    # Get reference position for this mesh point (k) and collocation point (j+1)
+                    Qs_ref_kj = np.zeros(nJoints)
+                    for idx, joint in enumerate(joints):
+                        Qs_ref_kj[idx] = Qs_track_ref_scaled[joint].iloc[k]
+                    # Only track non-pelvis joints
+                    tracking_error_opt = Qskj_opt[idxJointsToTrack, j+1] - Qs_ref_kj[idxJointsToTrack]
+                    positionTrackingTerm_opt = ca.sumsqr(tracking_error_opt)
+                else:
+                    positionTrackingTerm_opt = 0
+                
                 metabolicEnergyRateTerm_opt_all += (
                     weights['metabolicEnergyRateTerm'] * 
                     metabolicEnergyRateTerm_opt * h_opt * B[j + 1] / 
@@ -1860,6 +1957,9 @@ for case in cases:
                 armAccelerationTerm_opt_all += (
                     weights['controls'] * armAccelerationTerm_opt * 
                     h_opt * B[j + 1] / distTraveled_opt)
+                positionTrackingTerm_opt_all += (
+                    weights['positionTrackingTerm'] * positionTrackingTerm_opt * 
+                    h_opt * B[j + 1] / distTraveled_opt)
         
         objective_terms = {
             "metabolicEnergyRateTerm": metabolicEnergyRateTerm_opt_all.full(),
@@ -1869,7 +1969,8 @@ for case in cases:
             "passiveTorqueTerm": passiveTorqueTerm_opt_all.full(),
             "activationDtTerm": activationDtTerm_opt_all.full(),
             "forceDtTerm": forceDtTerm_opt_all.full(),
-            "armAccelerationTerm": armAccelerationTerm_opt_all.full()}
+            "armAccelerationTerm": armAccelerationTerm_opt_all.full(),
+            "positionTrackingTerm": positionTrackingTerm_opt_all.full()}
         
         JAll_opt = (metabolicEnergyRateTerm_opt_all.full() +
                      activationTerm_opt_all.full() + 
@@ -1878,7 +1979,8 @@ for case in cases:
                      passiveTorqueTerm_opt_all.full() + 
                      activationDtTerm_opt_all.full() + 
                      forceDtTerm_opt_all.full() + 
-                     armAccelerationTerm_opt_all.full())
+                     armAccelerationTerm_opt_all.full() +
+                     positionTrackingTerm_opt_all.full())
         
         if stats['success'] == True:
             assert np.alltrue(
