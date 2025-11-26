@@ -13,10 +13,17 @@
     Please contact me or submit a github issue if you find bugs or have
     suggestions to improve this script.
     
+    # salloc -c 16 --mem=36gb --time=1-00
+    # conda activate predsim_tutorial
+    # cd /dataNAS/people/aagatti/projects/pred_sim_OAI/predsim_tutorial
+    # python main_9000099.py
+    salloc -c 32 --mem=40gb --time=1-00
     salloc -c 16 --mem=36gb --time=1-00
     conda activate predsim_tutorial
-    cd /dataNAS/people/aagatti/projects/pred_sim_OAI/predsim_tutorial
-    python main_9000099.py
+    python /dataNAS/people/aagatti/projects/pred_sim_OAI/predsim_tutorial/main_wcb.py --subject_id 9000296 --speed 1.4265
+    python /dataNAS/people/aagatti/projects/pred_sim_OAI/predsim_tutorial/main_wcb.py --subject_id 9001400 --limb_length 0.73
+    python /dataNAS/people/aagatti/projects/pred_sim_OAI/predsim_tutorial/main_wcb.py --subject_id 9000099 --limb_length 0.987
+    
 '''
 
 import os
@@ -50,31 +57,62 @@ saveOptimalTrajectories = True # Set True to save optimal trajectories
 # cases = [str(i) for i in range(0,1)]
 
 
-# argparse to get the subject_id 
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--subject_id', type=str, required=True)
-parser.add_argument('--speed', type=float, required=False, default=1.33)
+parser.add_argument('--limb_length', type=float, required=True, help="Limb length in meters")
+parser.add_argument('--speed', type=float, required=False, default=None, help="Target speed in m/s. If not provided, computed from Froude number.")
 args = parser.parse_args()
 subject_id = args.subject_id
-targetSpeed = args.speed
+limb_length = args.limb_length
+
+# 1. Calculate target speed based on Froude number if not provided
+# v = sqrt(g * F * L)
+# Default Froude number = 0.25 (typical comfortable walking)
+if args.speed is None:
+    g = 9.81
+    froude_number = 0.25
+    targetSpeed = np.sqrt(g * froude_number * limb_length)
+    print(f"Computed Froude speed: {targetSpeed:.2f} m/s (L={limb_length:.2f}m)")
+else:
+    targetSpeed = args.speed
+    print(f"Using provided speed: {targetSpeed:.2f} m/s")
+
+# 2. Calculate preferred step width based on Donelan et al. (2001)
+# "Mechanical and metabolic determinants of the preferred step width in human walking"
+# They found preferred step width is approximately 0.12 * Leg Length.
+# https://spot.colorado.edu/~kram/DKKwidthPRSL2001.pdf
+step_width_ratio = 0.12
+preferred_step_width = limb_length * step_width_ratio
+print(f"Computed preferred step width: {preferred_step_width:.3f} m (ratio={step_width_ratio})")
+
+# Set bounds for collision avoidance based on this width and scaling
+# Reference leg length for scaling other constraints (Hamner model approx)
+REF_LIMB_LENGTH_M = 0.826 
+scaling_factor = limb_length / REF_LIMB_LENGTH_M
+
+# Feet: Use Donelan width for heels, scaled width for toes (to enforce toe-out)
+MIN_CALC_DIST_M = preferred_step_width
+MIN_TOE_DIST_M = preferred_step_width * 1.11 
+
+# Other Body Parts: Keep constant (unscaled) to avoid "force field" effects on large subjects
+# Original Hand Dist = 0.18m (sqrt(0.0324))
+# MIN_HAND_DIST_M = 0.18 
+MIN_HAND_DIST_M = 0.18 * scaling_factor
+# Original Tibia Dist = 0.11m (sqrt(0.0121))
+# MIN_TIBIA_DIST_M = 0.11 
+MIN_TIBIA_DIST_M = 0.11 * scaling_factor
+
+
+print(f"Collision Constraints:")
+print(f"  Calcaneus: {MIN_CALC_DIST_M:.3f} m (Scaled)")
+print(f"  Toes:      {MIN_TOE_DIST_M:.3f} m (Scaled)")
+print(f"  Hands:     {MIN_HAND_DIST_M:.3f} m (Constant)")
+print(f"  Tibias:    {MIN_TIBIA_DIST_M:.3f} m (Constant)")
 
 print(f"Starting predictive simulation for subject {subject_id} at speed {targetSpeed} m/s", flush=True)
 
-
-
-cases = ['AG1']
-
-SAGITTAL_WEIGHT = 1_000
-
-print('==' * 100)
-print('==' * 100)
-print('==' * 100)
-print(f"SAGITTAL_WEIGHT: {SAGITTAL_WEIGHT}")
-print('==' * 100)
-print('==' * 100)
-print('==' * 100)
-
+cases = ['AG3']  # AG1
 
 # Import settings.
 from settings import getSettings
@@ -130,7 +168,7 @@ for case in cases:
                'armExcitationTerm': 1000000,
                'passiveTorqueTerm': 1000, 
                'controls': 0.001,
-               'positionTrackingTerm': 10}  # Low weight for loose tracking
+               'positionTrackingTerm': 500}  # Higher weight for stronger tracking
     if 'metabolicEnergyRateTerm' in settings[case]:
         weights['metabolicEnergyRateTerm'] = (
             settings[case]['metabolicEnergyRateTerm'])
@@ -318,11 +356,25 @@ for case in cases:
     # Pelvis coordinates should be free to optimize, not forced to match reference
     pelvisJoints = ['pelvis_tilt', 'pelvis_list', 'pelvis_rotation',
                     'pelvis_tx', 'pelvis_ty', 'pelvis_tz']
-    jointsToTrack = [joint for joint in joints if joint not in pelvisJoints]
+    
+    # Track all lower-body kinematics to produce realistic gait patterns
+    # Pelvis coordinates stay free for predictive optimization
+    jointsToTrack = [
+        'hip_flexion_l', 'hip_flexion_r',
+        'hip_adduction_l', 'hip_adduction_r',
+        'hip_rotation_l', 'hip_rotation_r',
+        'knee_angle_l', 'knee_angle_r',
+        'ankle_angle_l', 'ankle_angle_r',
+        'subtalar_angle_l', 'subtalar_angle_r',
+    ]
+    if withMTP:
+        # jointsToTrack += ['mtp_angle_l', 'mtp_angle_r'] # MTP tracking is usually unnecessary
+        pass
+
     from utilities import getJointIndices
     idxJointsToTrack = getJointIndices(joints, jointsToTrack)
     nJointsToTrack = len(jointsToTrack)
-    print(f"Tracking {nJointsToTrack} joints (excluding {len(pelvisJoints)} pelvis coordinates)")
+    print(f"Tracking {nJointsToTrack} lower-body joints")
     
     # Rotational joints.
     rotationalJoints = copy.deepcopy(joints)
@@ -468,6 +520,10 @@ for case in cases:
         for joint in mtpJoints:
             passiveTorqueJoints.remove(joint)
     nPassiveTorqueJoints = len(passiveTorqueJoints)
+    
+    # Joints to disable passive stiffness for (empty = all springs enabled)
+    # With strong tracking, springs help pull toward realistic patterns
+    jointsToDisablePassive = []
    
     # Trunk joints.
     trunkJoints = ['lumbar_extension', 'lumbar_bending', 'lumbar_rotation']
@@ -814,6 +870,14 @@ for case in cases:
     gFCol = guess.getGuessForceCol()
     gQs = guess.getGuessPosition(scalingQs)
     gQsCol = guess.getGuessPositionCol()
+    
+    # Scale pelvis_ty for subject's leg length (template motion uses reference height)
+    # This prevents short people from starting "floating" and tall people from being "buried"
+    pelvis_ty_scale = scaling_factor  # scaling_factor = limb_length / REF_LIMB_LENGTH_M
+    gQs['pelvis_ty'] = gQs['pelvis_ty'] * pelvis_ty_scale
+    gQsCol['pelvis_ty'] = gQsCol['pelvis_ty'] * pelvis_ty_scale
+    print(f"Scaled pelvis_ty initial guess by {pelvis_ty_scale:.3f} for subject leg length")
+    
     gQds = guess.getGuessVelocity(scalingQds)
     gQdsCol = guess.getGuessVelocityCol()    
     gArmA = guess.getGuessTorqueActuatorActivation(armJoints)
@@ -1115,9 +1179,12 @@ for case in cases:
             passiveTorque_j = {}
             passiveTorquesj = ca.MX(nPassiveTorqueJoints, 1)
             for cj, joint in enumerate(passiveTorqueJoints):
-                passiveTorque_j[joint] = f_passiveTorque[joint](
-                    Qskj_nsc[joints.index(joint), j+1], 
-                    Qdskj_nsc[joints.index(joint), j+1])
+                if joint in jointsToDisablePassive:
+                    passiveTorque_j[joint] = 0
+                else:
+                    passiveTorque_j[joint] = f_passiveTorque[joint](
+                        Qskj_nsc[joints.index(joint), j+1], 
+                        Qdskj_nsc[joints.index(joint), j+1])
                 passiveTorquesj[cj, 0] = passiveTorque_j[joint]
                 
             linearPassiveTorqueArms_j = {}
@@ -1147,30 +1214,15 @@ for case in cases:
             forceDtTerm = f_NMusclesSum2(normFDtj[:, j])
             armAccelerationTerm = f_nArmJointsSum2(Qddsj[idxArmJoints, j])
             
-            # Position tracking term
             if Qs_track_ref_scaled is not None:
-                # Tracking error: only for non-pelvis joints
-                # Pelvis is free to optimize for COM trajectory
+                # Tracking error: only for tracked joints (sagittal plane)
                 tracking_error = Qskj[idxJointsToTrack, j+1] - Qs_ref_k[idxJointsToTrack]
                 
-                # Variable weights for tracking
-                # Higher weight for sagittal plane kinematics (hip/knee/ankle flexion)
-                # Lower weight for other DOFs
-                sagittal_joints = ['hip_flexion_r', 'hip_flexion_l', 
-                                 'knee_angle_r', 'knee_angle_l', 
-                                 'ankle_angle_r', 'ankle_angle_l']
-                
-                tracking_weights_vec = []
-                for joint in jointsToTrack:
-                    if joint in sagittal_joints:
-                        tracking_weights_vec.append(weights['positionTrackingTerm'] * SAGITTAL_WEIGHT) # 5x weight for sagittal
-                    else:
-                        tracking_weights_vec.append(weights['positionTrackingTerm']) # Base weight for others
-                
-                tracking_weights_vec = ca.DM(tracking_weights_vec)
+                # Apply weight directly (no multiplier)
+                tracking_weight = weights['positionTrackingTerm']
                 
                 # Weighted sum of squared errors
-                positionTrackingTerm = ca.mtimes(tracking_weights_vec.T, tracking_error**2)
+                positionTrackingTerm = tracking_weight * ca.sumsqr(tracking_error)
             else:
                 positionTrackingTerm = 0
             
@@ -1328,10 +1380,10 @@ for case in cases:
         opti.subject_to(ca.vec(coll_ineq_constr1) >= 0)
         opti.subject_to(
             ca.vec(coll_ineq_constr2) <= 1 / activationTimeConstant)    
-        opti.subject_to(opti.bounded(0.0081, ca.vec(coll_ineq_constr3), 4))
-        opti.subject_to(opti.bounded(0.0324 , ca.vec(coll_ineq_constr4), 4))
-        opti.subject_to(opti.bounded(0.0121, ca.vec(coll_ineq_constr5), 4))
-        opti.subject_to(opti.bounded(0.01, ca.vec(coll_ineq_constr6), 4))
+        opti.subject_to(opti.bounded(MIN_CALC_DIST_M**2, ca.vec(coll_ineq_constr3), 4))
+        opti.subject_to(opti.bounded(MIN_HAND_DIST_M**2 , ca.vec(coll_ineq_constr4), 4))
+        opti.subject_to(opti.bounded(MIN_TIBIA_DIST_M**2, ca.vec(coll_ineq_constr5), 4))
+        opti.subject_to(opti.bounded(MIN_TOE_DIST_M**2, ca.vec(coll_ineq_constr6), 4))
                 
         #######################################################################
         # Equality / continuity constraints.
@@ -1907,9 +1959,12 @@ for case in cases:
                 # Passive joint torques.
                 passiveTorquesj_opt = np.zeros((nPassiveTorqueJoints, 1))
                 for cj, joint in enumerate(passiveTorqueJoints):
-                    passiveTorquesj_opt[cj, 0] = f_passiveTorque[joint](
-                        Qskj_opt_nsc[joints.index(joint), j+1], 
-                        Qdskj_opt_nsc[joints.index(joint), j+1])
+                    if joint in jointsToDisablePassive:
+                        passiveTorquesj_opt[cj, 0] = 0
+                    else:
+                        passiveTorquesj_opt[cj, 0] = f_passiveTorque[joint](
+                            Qskj_opt_nsc[joints.index(joint), j+1], 
+                            Qdskj_opt_nsc[joints.index(joint), j+1])
                 
                 ###############################################################
                 # Polynomial approximations.
@@ -1980,25 +2035,15 @@ for case in cases:
                     Qs_ref_kj = np.zeros(nJoints)
                     for idx, joint in enumerate(joints):
                         Qs_ref_kj[idx] = Qs_track_ref_scaled[joint].iloc[k]
-                    # Only track non-pelvis joints
+                        
+                    # Only track selected joints
                     tracking_error_opt = Qskj_opt[idxJointsToTrack, j+1] - Qs_ref_kj[idxJointsToTrack]
                     
-                    # Variable weights for tracking (must match solver definition)
-                    sagittal_joints = ['hip_flexion_r', 'hip_flexion_l', 
-                                     'knee_angle_r', 'knee_angle_l', 
-                                     'ankle_angle_r', 'ankle_angle_l']
-                    
-                    tracking_weights_vec = []
-                    for joint in jointsToTrack:
-                        if joint in sagittal_joints:
-                            tracking_weights_vec.append(weights['positionTrackingTerm'] * SAGITTAL_WEIGHT)
-                        else:
-                            tracking_weights_vec.append(weights['positionTrackingTerm'])
-                    
-                    tracking_weights_vec = ca.DM(tracking_weights_vec)
+                    # Apply weight directly (no multiplier)
+                    tracking_weight = weights['positionTrackingTerm']
                     
                     # Weighted sum of squared errors
-                    positionTrackingTerm_opt = ca.mtimes(tracking_weights_vec.T, tracking_error_opt**2)
+                    positionTrackingTerm_opt = tracking_weight * ca.sumsqr(tracking_error_opt)
                 else:
                     positionTrackingTerm_opt = 0
                 
