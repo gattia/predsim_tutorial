@@ -58,13 +58,27 @@ saveOptimalTrajectories = True # Set True to save optimal trajectories
 
 
 import argparse
-parser = argparse.ArgumentParser()
-parser.add_argument('--subject_id', type=str, required=True)
-parser.add_argument('--limb_length', type=float, required=True, help="Limb length in meters")
-parser.add_argument('--speed', type=float, required=False, default=None, help="Target speed in m/s. If not provided, computed from Froude number.")
+parser = argparse.ArgumentParser(description='Run predictive simulation for a subject')
+parser.add_argument('--subject_id', type=str, required=True,
+                    help='Subject ID (e.g., 9000296)')
+parser.add_argument('--limb_length', type=float, required=True, 
+                    help="Limb length in meters")
+parser.add_argument('--speed', type=float, required=False, default=None, 
+                    help="Target speed in m/s. If not provided, computed from Froude number.")
+parser.add_argument('--data_dir', type=str, 
+                    default='/dataNAS/people/aagatti/projects/pred_sim_OAI/Data',
+                    help='Path to Data directory containing Simulations, Results, and _motion_templates')
+parser.add_argument('--motion_templates_dir', type=str, default=None,
+                    help='Path to motion templates directory (overrides data_dir/_motion_templates)')
 args = parser.parse_args()
 subject_id = args.subject_id
 limb_length = args.limb_length
+data_dir = Path(args.data_dir)
+# Allow motion_templates_dir to be specified separately (e.g., if stored in OAI_Orchestration/templates)
+if args.motion_templates_dir:
+    motion_templates_dir = Path(args.motion_templates_dir)
+else:
+    motion_templates_dir = data_dir / '_motion_templates'
 
 # 1. Calculate target speed based on Froude number if not provided
 # v = sqrt(g * F * L)
@@ -211,36 +225,23 @@ for case in cases:
         nThreads = settings[case]['nThreads']
     parallelMode = "thread" # only supported mode.
          
-    # Paths.
-    main_folder = '/dataNAS/people/aagatti/projects/pred_sim_OAI/Data'
-    # model_type = 'Reference_Models'
-    model_type = 'Simulations'
-    models_folder = os.path.join(main_folder, model_type)
-    # subject_id is already set from command line arguments (line 59)
-    # model_folder_name = 'Hamner'
+    # Paths (using data_dir and motion_templates_dir from command line arguments).
+    main_folder = data_dir
+    models_folder = main_folder / 'Simulations'
     model_folder_name = subject_id
-    model_folder = os.path.join(models_folder, model_folder_name)
-    pathModelFolder = model_folder
-    # modelName = model
+    model_folder = models_folder / model_folder_name
+    pathModelFolder = str(model_folder)
     modelName = f'Hamner_modified_{subject_id}_scaled'
-    pathModel = os.path.join(model_folder, modelName + '.osim')
+    pathModel = str(model_folder / (modelName + '.osim'))
     
-    results_folder_name = 'Results'
-    results_folder = os.path.join(main_folder, results_folder_name)
-    result_folder = os.path.join(results_folder, model_folder_name)
+    results_folder = main_folder / 'Results'
+    result_folder = results_folder / model_folder_name
     
-    
-    # pathMain = os.getcwd()
-    # pathOpenSimModel = os.path.join(pathMain, 'OpenSimModel')
-    # pathData = os.path.join(pathOpenSimModel, model)
-    # pathModelFolder = os.path.join(pathData, 'Model')
-    # modelName = '{}_scaled'.format(model)
-    
-    # pathModel = os.path.join(pathModelFolder, modelName + '.osim')
-    pathMotionFile4Polynomials = os.path.join(
-        main_folder, '_motion_templates', 'MuscleAnalysis', 'dummy_motion.mot')
+    # Motion templates path (can be overridden via CLI)
+    pathMotionFile4Polynomials = str(
+        motion_templates_dir / 'MuscleAnalysis' / 'dummy_motion.mot')
     pathCase = 'Case_' + case    
-    pathTrajectories = result_folder
+    pathTrajectories = str(result_folder)
     pathResults = os.path.join(pathTrajectories, pathCase)
     os.makedirs(pathResults, exist_ok=True)
     
