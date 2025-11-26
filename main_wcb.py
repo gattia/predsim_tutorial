@@ -1794,6 +1794,13 @@ for case in cases:
         mtnHeatRate_GC = np.zeros((nMuscles,N_gaitCycle))
         shHeatRate_GC = np.zeros((nMuscles,N_gaitCycle))
         mechWRate_GC = np.zeros((nMuscles,N_gaitCycle))
+        # Additional muscle states for JRAnalysis and post-processing
+        muscleForce_GC = np.zeros((nMuscles, N_gaitCycle))  # Tendon force in Newtons
+        activeFiberForce_GC = np.zeros((nMuscles, N_gaitCycle))
+        passiveFiberForce_GC = np.zeros((nMuscles, N_gaitCycle))
+        muscleTendonLength_GC = np.zeros((nMuscles, N_gaitCycle))
+        muscleTendonVelocity_GC = np.zeros((nMuscles, N_gaitCycle))
+        normTendonForce_GC = np.zeros((nMuscles, N_gaitCycle))
         for k in range(N_gaitCycle):
             ###################################################################
             # Polynomial approximations.
@@ -1835,6 +1842,13 @@ for case in cases:
                  
             normFiberLength_GC[:,k] = normFiberLengthk_GC.full().flatten()
             fiberVelocity_GC[:,k] = fiberVelocityk_GC.full().flatten()
+            # Save additional muscle states for JRAnalysis and post-processing
+            muscleForce_GC[:, k] = Fk_GC.full().flatten()
+            activeFiberForce_GC[:, k] = activeFiberForcek_GC.full().flatten()
+            passiveFiberForce_GC[:, k] = passiveFiberForcek_GC.full().flatten()
+            muscleTendonLength_GC[:, k] = lMTk_GC_lr.full().flatten()
+            muscleTendonVelocity_GC[:, k] = vMTk_GC_lr.full().flatten()
+            normTendonForce_GC[:, k] = F_GC[:, k]
             
             ###################################################################
             # Get metabolic energy rate.
@@ -2163,6 +2177,14 @@ for case in cases:
                              os.path.join(pathResults, f'GRF{suffix}.mot'), 
                              datatype='GRF')
             
+            # Write muscle forces file for OpenSim JointReaction Analysis
+            muscleForceLabels = bothSidesMuscles  # Just muscle names
+            labels = ['time'] + muscleForceLabels
+            data = np.concatenate((tgrid_GC.T, muscleForce_GC.T), axis=1)
+            numpy_to_storage(labels, data,
+                             os.path.join(pathResults, f'muscle_forces{suffix}.sto'),
+                             datatype='muscle_forces')
+            
         # Save optimal trajectories for further analysis.
         if saveOptimalTrajectories:
             suffix = ""
@@ -2200,6 +2222,13 @@ for case in cases:
                                 'objective': stats['iterations']['obj'][-1],
                                 'objective_terms': objective_terms,
                                 'iter_count': stats['iter_count'],
-                                "stride_length": stride_length_GC}              
+                                "stride_length": stride_length_GC,
+                                # Additional muscle states for JRAnalysis and post-processing
+                                'muscle_forces': muscleForce_GC,
+                                'active_fiber_forces': activeFiberForce_GC,
+                                'passive_fiber_forces': passiveFiberForce_GC,
+                                'muscle_tendon_lengths': muscleTendonLength_GC,
+                                'muscle_tendon_velocities': muscleTendonVelocity_GC,
+                                'norm_tendon_forces': normTendonForce_GC}              
             np.save(os.path.join(pathTrajectories, f'optimaltrajectories{suffix}.npy'),
                     optimaltrajectories)
