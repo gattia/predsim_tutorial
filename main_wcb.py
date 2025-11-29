@@ -760,8 +760,7 @@ for case in cases:
         nametrial_walk_IK = 'IK_InitialGuess_halfGaitCycle.mot'
     elif gaitCycleSimulation == 'full':
         nametrial_walk_IK = 'IK_InitialGuess_fullGaitCycle.mot'        
-    pathIK_walk = os.path.join(main_folder, '_motion_templates', 
-                               'InverseKinematics', nametrial_walk_IK)
+    pathIK_walk = str(motion_templates_dir / 'InverseKinematics' / nametrial_walk_IK)
     from utilities import getIK
     Qs_walk_filt = getIK(pathIK_walk, joints)[1]
     
