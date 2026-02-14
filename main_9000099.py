@@ -134,7 +134,7 @@ for case in cases:
     if 'd' in settings[case]:
         d = settings[case]['d']    
     
-    nThreads = int(os.environ.get('SLURM_CPUS_PER_TASK' * 2, 4))
+    nThreads = int(os.environ.get('SLURM_CPUS_PER_TASK', 4))
 
     if 'nThreads' in settings[case]:
         nThreads = settings[case]['nThreads']

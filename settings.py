@@ -43,7 +43,7 @@ def getSettings():
             'targetSpeed': 1.33,
             'N': 50,
             'gaitCycleSimulation': 'full',
-            'positionTrackingTerm': 100},  # Low weight for loose tracking
+            'positionTrackingTerm': 100},  # Medium weight for tracking
         'AG2': {
             'model': 'Hamner_modified',
             'targetSpeed': 1.33,
@@ -55,7 +55,7 @@ def getSettings():
             'targetSpeed': 1.33,
             'N': 50,
             'gaitCycleSimulation': 'full',
-            'positionTrackingTerm': 500},  # Low weight for loose tracking
+            'positionTrackingTerm': 500},  # High(er) weight
         }
     
     return settings
